@@ -28,16 +28,19 @@
     var find = function (txt) { return as.find(function (a) { return a.textContent.trim() === txt; }); };
     var lg = find('Se connecter');
     if (lg) { if (once('sso', 20000)) lg.click(); return out({ s: 'sso' }); }
+    // Le lien « Mon Planning » n'existe qu'une fois le menu « Planning » ouvert.
     var mp = find('Mon Planning');
     if (mp) {
-      if (once('menu', 12000)) {
-        var p = find('Planning'); if (p) p.click();
-        setTimeout(function () { mp.click(); }, 800);
-      }
+      if (once('mon', 15000)) mp.click();
       return out({ s: 'menu' });
     }
-    if (location.pathname.indexOf('Planning') < 0 && once('goto', 20000))
-      location.href = 'https://connect.builders-ingenieurs.fr/faces/Planning.xhtml';
+    var pl = find('Planning');
+    if (pl) {
+      if (once('plan', 5000)) pl.click();
+      return out({ s: 'menu' });
+    }
+    var burger = document.querySelector('.menu-button, .topbar-menu-button, #menu-button, .layout-menu-button, a[class*=menu-button]');
+    if (burger && once('burger', 8000)) burger.click();
     return out({ s: 'wait', m: 'portail' });
   }
 
