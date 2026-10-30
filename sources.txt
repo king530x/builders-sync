@@ -1,0 +1,2391 @@
+=====FILE: app/build.gradle=====
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'fr.dadouch.builderssync'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'fr.dadouch.builderssync'
+        minSdk 29
+        targetSdk 34
+        versionCode((System.getenv("GITHUB_RUN_NUMBER") ?: "1") as Integer)
+        versionName "1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+    }
+
+    signingConfigs {
+        fixed {
+            storeFile file('../keystore/release.jks')
+            storePassword 'buildersync'
+            keyAlias 'builders'
+            keyPassword 'buildersync'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+        debug {
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+    implementation 'androidx.work:work-runtime:2.9.1'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+}
+=====FILE: app/src/main/AndroidManifest.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Builders Sync"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BuildersSync">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"
+            android:label="Connexion Builders" />
+
+        <receiver
+            android:name=".NextCourseWidget"
+            android:exported="true"
+            android:label="Prochain cours">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
+    </application>
+</manifest>
+=====FILE: app/src/main/java/fr/dadouch/builderssync/MainActivity.java=====
+package fr.dadouch.builderssync;
+
+import android.Manifest;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.os.Bundle;
+import android.text.TextUtils;
+import android.util.TypedValue;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.webkit.CookieManager;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.checkbox.MaterialCheckBox;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.progressindicator.LinearProgressIndicator;
+import com.google.android.material.snackbar.Snackbar;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
+
+import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+public class MainActivity extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
+    public static final String EXTRA_TAB = "tab";
+    public static final int TAB_LOGIN = 0, TAB_PROGRAM = 1, TAB_CHANGES = 2;
+    private static final int[] NAV_IDS = {R.id.nav_connexion, R.id.nav_programme, R.id.nav_changements};
+    private static final String[] TITLES = {"Builders Sync", "Programme", "Changements"};
+
+    private MaterialToolbar toolbar;
+    private LinearProgressIndicator topProgress;
+    private BottomNavigationView nav;
+    private final View[] tabs = new View[3];
+    private int current = -1;
+
+    // Onglet Connexion
+    private View hero, heroIcon;
+    private TextView heroTitle, heroSubtitle;
+    private MaterialCardView cardLogin, cardMfa, cardAccount, cardSync, cardCal;
+    private TextInputLayout layoutEmail, layoutPassword;
+    private TextInputEditText inputEmail, inputPassword;
+    private MaterialCheckBox checkRemember;
+    private MaterialButton btnLogin, btnSync, btnReconnect, btnLogout;
+    private LinearProgressIndicator loginProgress, syncProgress;
+    private TextView loginPhase, loginError, mfaNumber, mfaHint, avatar, accountEmail, accountState,
+            syncStatus, syncLast, syncPhase, calName;
+
+    // Autres onglets
+    private SwipeRefreshLayout swipeProg;
+    private LinearLayout progList, changeList;
+
+    private boolean loginPending = false;
+    private long okBeforeLogin = 0;
+    private String lastLoginState = "";
+    private ObjectAnimator floatAnim, pulseAnim;
+
+    private int dp(float v) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    @Override
+    protected void onCreate(Bundle saved) {
+        super.onCreate(saved);
+        setContentView(R.layout.activity_main);
+        Notif.channels(this);
+
+        toolbar = findViewById(R.id.toolbar);
+        topProgress = findViewById(R.id.topProgress);
+        nav = findViewById(R.id.bottomNav);
+        tabs[0] = findViewById(R.id.tabConnexion);
+        tabs[1] = findViewById(R.id.tabProgramme);
+        tabs[2] = findViewById(R.id.tabChangements);
+
+        hero = findViewById(R.id.hero);
+        heroIcon = findViewById(R.id.heroIcon);
+        heroTitle = findViewById(R.id.heroTitle);
+        heroSubtitle = findViewById(R.id.heroSubtitle);
+        cardLogin = findViewById(R.id.cardLogin);
+        cardMfa = findViewById(R.id.cardMfa);
+        cardAccount = findViewById(R.id.cardAccount);
+        cardSync = findViewById(R.id.cardSync);
+        cardCal = findViewById(R.id.cardCal);
+        layoutEmail = findViewById(R.id.layoutEmail);
+        layoutPassword = findViewById(R.id.layoutPassword);
+        inputEmail = findViewById(R.id.inputEmail);
+        inputPassword = findViewById(R.id.inputPassword);
+        checkRemember = findViewById(R.id.checkRemember);
+        btnLogin = findViewById(R.id.btnLogin);
+        btnSync = findViewById(R.id.btnSync);
+        btnReconnect = findViewById(R.id.btnReconnect);
+        btnLogout = findViewById(R.id.btnLogout);
+        loginProgress = findViewById(R.id.loginProgress);
+        syncProgress = findViewById(R.id.syncProgress);
+        loginPhase = findViewById(R.id.loginPhase);
+        loginError = findViewById(R.id.loginError);
+        mfaNumber = findViewById(R.id.mfaNumber);
+        mfaHint = findViewById(R.id.mfaHint);
+        avatar = findViewById(R.id.avatar);
+        accountEmail = findViewById(R.id.accountEmail);
+        accountState = findViewById(R.id.accountState);
+        syncStatus = findViewById(R.id.syncStatus);
+        syncLast = findViewById(R.id.syncLast);
+        syncPhase = findViewById(R.id.syncPhase);
+        calName = findViewById(R.id.calName);
+        swipeProg = findViewById(R.id.swipeProg);
+        progList = findViewById(R.id.progList);
+        changeList = findViewById(R.id.changeList);
+
+        // Le processus a pu être tué pendant une synchro : on remet l'état à zéro.
+        if (Store.running(this) && !SyncWorker.isRunning()) Store.setRunning(this, false);
+
+        inputEmail.setText(Store.account(this));
+        checkRemember.setChecked(Store.remember(this));
+        inputPassword.setOnEditorActionListener((v, id, ev) -> {
+            if (id == EditorInfo.IME_ACTION_DONE) { doLogin(); return true; }
+            return false;
+        });
+        btnLogin.setOnClickListener(v -> doLogin());
+        findViewById(R.id.btnOpenWeb).setOnClickListener(v -> startActivity(new Intent(this, LoginActivity.class)));
+        btnReconnect.setOnClickListener(v -> startActivity(new Intent(this, LoginActivity.class)));
+        btnSync.setOnClickListener(v -> {
+            bounce(v);
+            Store.setRunning(this, true);
+            Store.setPhase(this, "Démarrage…");
+            SyncWorker.runNow(this);
+        });
+        findViewById(R.id.btnCal).setOnClickListener(v -> chooseCalendar());
+        btnLogout.setOnClickListener(v -> new MaterialAlertDialogBuilder(this)
+                .setTitle("Se déconnecter ?")
+                .setMessage("La synchronisation automatique s'arrête et tes identifiants sont effacés de ce téléphone. "
+                        + "Les cours déjà dans ton agenda restent en place.")
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("Se déconnecter", (d, w) -> doLogout())
+                .show());
+
+        swipeProg.setColorSchemeColors(color(androidx.appcompat.R.attr.colorPrimary));
+        swipeProg.setOnRefreshListener(() -> {
+            if (Store.isLoggedOut(this)) { swipeProg.setRefreshing(false); selectTab(TAB_LOGIN, true); return; }
+            Store.setRunning(this, true);
+            SyncWorker.runNow(this);
+        });
+
+        nav.setOnItemSelectedListener(item -> {
+            for (int i = 0; i < NAV_IDS.length; i++) if (NAV_IDS[i] == item.getItemId()) showTab(i, true);
+            return true;
+        });
+
+        askPermissions();
+        SyncWorker.schedule(this);
+
+        int start = Store.isLoggedIn(this) ? TAB_PROGRAM : TAB_LOGIN;
+        start = getIntent().getIntExtra(EXTRA_TAB, start);
+        selectTab(start, false);
+        playIntro();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent.hasExtra(EXTRA_TAB)) selectTab(intent.getIntExtra(EXTRA_TAB, TAB_PROGRAM), true);
+    }
+
+    private int color(int attr) {
+        TypedValue tv = new TypedValue();
+        getTheme().resolveAttribute(attr, tv, true);
+        return tv.resourceId != 0 ? ContextCompat.getColor(this, tv.resourceId) : tv.data;
+    }
+
+    // ------------------------------------------------------------------ Onglets & animations
+
+    private void selectTab(int i, boolean animate) {
+        showTab(i, animate);
+        if (nav.getSelectedItemId() != NAV_IDS[i]) nav.getMenu().findItem(NAV_IDS[i]).setChecked(true);
+    }
+
+    private void showTab(int i, boolean animate) {
+        if (i == current) return;
+        View in = tabs[i];
+        View out = current >= 0 ? tabs[current] : null;
+        int dir = i > current ? 1 : -1;
+        current = i;
+        for (int k = 0; k < tabs.length; k++) {
+            if (tabs[k] != in && tabs[k] != out) tabs[k].setVisibility(View.GONE);
+        }
+        if (!animate || out == null) {
+            if (out != null) out.setVisibility(View.GONE);
+            in.setVisibility(View.VISIBLE);
+            in.setAlpha(1f);
+            in.setTranslationX(0);
+        } else {
+            out.animate().cancel();
+            out.animate().alpha(0f).translationX(-dir * dp(28)).setDuration(140)
+                    .withEndAction(() -> {
+                        if (tabs[current] != out) out.setVisibility(View.GONE);
+                        out.setAlpha(1f);
+                        out.setTranslationX(0);
+                    }).start();
+            in.animate().cancel();
+            in.setVisibility(View.VISIBLE);
+            in.setAlpha(0f);
+            in.setTranslationX(dir * dp(40));
+            in.animate().alpha(1f).translationX(0).setStartDelay(60).setDuration(280)
+                    .setInterpolator(new DecelerateInterpolator(2f)).start();
+        }
+        toolbar.setTitle(TITLES[i]);
+        renderToolbar();
+        if (i == TAB_LOGIN) renderLogin(true);
+        if (i == TAB_PROGRAM) renderProgram(true);
+        if (i == TAB_CHANGES) renderChanges(true);
+    }
+
+    /** Apparition en cascade des éléments d'une liste. */
+    private void cascade(View v, int index) {
+        v.setAlpha(0f);
+        v.setTranslationY(dp(18));
+        v.animate().alpha(1f).translationY(0).setStartDelay(Math.min(index, 12) * 35L).setDuration(320)
+                .setInterpolator(new DecelerateInterpolator(1.6f)).start();
+    }
+
+    private void bounce(View v) {
+        v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).withEndAction(() ->
+                v.animate().scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(new OvershootInterpolator(3f)).start()
+        ).start();
+    }
+
+    private void playIntro() {
+        heroIcon.setScaleX(0.4f);
+        heroIcon.setScaleY(0.4f);
+        heroIcon.setAlpha(0f);
+        heroIcon.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(600)
+                .setInterpolator(new OvershootInterpolator(1.8f)).start();
+        heroTitle.setAlpha(0f);
+        heroTitle.setTranslationY(dp(12));
+        heroTitle.animate().alpha(1f).translationY(0).setStartDelay(200).setDuration(400).start();
+        heroSubtitle.setAlpha(0f);
+        heroSubtitle.animate().alpha(1f).setStartDelay(320).setDuration(400).start();
+        floatAnim = ObjectAnimator.ofFloat(heroIcon, "translationY", 0f, -dp(6));
+        floatAnim.setDuration(1800);
+        floatAnim.setRepeatMode(ValueAnimator.REVERSE);
+        floatAnim.setRepeatCount(ValueAnimator.INFINITE);
+        floatAnim.setStartDelay(700);
+        floatAnim.start();
+    }
+
+    private void renderToolbar() {
+        boolean running = Store.running(this);
+        topProgress.setVisibility(running && current != TAB_LOGIN ? View.VISIBLE : View.INVISIBLE);
+        if (current == TAB_PROGRAM) {
+            int n = 0;
+            long now = System.currentTimeMillis();
+            for (Session s : Store.upcoming(this)) if (s.endMs >= now) n++;
+            toolbar.setSubtitle(n == 0 ? null : n + " cours à venir · " + Store.DAYS + " jours");
+        } else if (current == TAB_CHANGES) {
+            toolbar.setSubtitle("Ajouts, modifications et annulations");
+        } else {
+            toolbar.setSubtitle(Store.isLoggedIn(this) ? "Connecté" : null);
+        }
+        swipeProg.setRefreshing(running && current == TAB_PROGRAM);
+    }
+
+    // ------------------------------------------------------------------ Connexion
+
+    private void doLogin() {
+        String e = inputEmail.getText() == null ? "" : inputEmail.getText().toString().trim();
+        String p = inputPassword.getText() == null ? "" : inputPassword.getText().toString();
+        layoutEmail.setError(null);
+        layoutPassword.setError(null);
+        if (!e.contains("@") || e.length() < 5) {
+            layoutEmail.setError("Saisis ton e-mail de l'école");
+            shake(layoutEmail);
+            return;
+        }
+        if (p.isEmpty()) {
+            if (Store.email(this).equalsIgnoreCase(e) && !Store.password(this).isEmpty()) {
+                p = Store.password(this); // mot de passe déjà enregistré
+            } else {
+                layoutPassword.setError("Saisis ton mot de passe");
+                shake(layoutPassword);
+                return;
+            }
+        }
+        if (!e.equalsIgnoreCase(Store.account(this))) {
+            // Autre compte : on repart d'une session propre.
+            CookieManager.getInstance().removeAllCookies(null);
+            CookieManager.getInstance().flush();
+        }
+        hideKeyboard();
+        bounce(btnLogin);
+        Store.login(this, e, p, checkRemember.isChecked());
+        inputPassword.setText("");
+        loginPending = true;
+        okBeforeLogin = Store.lastOk(this);
+        Store.setRunning(this, true);
+        Store.setPhase(this, "Connexion à Microsoft…");
+        SyncWorker.runNow(this);
+        renderLogin(false);
+    }
+
+    private void doLogout() {
+        Store.logout(this);
+        CookieManager.getInstance().removeAllCookies(null);
+        CookieManager.getInstance().flush();
+        loginPending = false;
+        inputEmail.setText(Store.account(this));
+        selectTab(TAB_LOGIN, true);
+        renderLogin(false);
+        snack("Déconnecté");
+    }
+
+    private void shake(View v) {
+        ObjectAnimator a = ObjectAnimator.ofFloat(v, "translationX", 0, dp(10), -dp(10), dp(6), -dp(6), 0);
+        a.setDuration(380);
+        a.start();
+    }
+
+    private void hideKeyboard() {
+        View f = getCurrentFocus();
+        if (f != null) {
+            InputMethodManager imm = getSystemService(InputMethodManager.class);
+            imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
+            f.clearFocus();
+        }
+    }
+
+    private void renderLogin(boolean entering) {
+        boolean loggedIn = Store.isLoggedIn(this);
+        boolean running = Store.running(this);
+        String mfa = Store.mfa(this);
+        String phase = Store.phase(this);
+        boolean showForm = !loggedIn;
+
+        // Fin de la première connexion
+        if (loginPending && !running) {
+            loginPending = false;
+            if (Store.lastOk(this) > okBeforeLogin) {
+                snack("Connecté ✓ Planning synchronisé");
+                selectTab(TAB_PROGRAM, true);
+                return;
+            }
+        }
+
+        String state = showForm + "|" + loggedIn;
+        boolean changed = !state.equals(lastLoginState);
+        lastLoginState = state;
+
+        hero.setVisibility(showForm ? View.VISIBLE : View.GONE);
+        setVisible(cardLogin, showForm, changed);
+        setVisible(cardAccount, loggedIn, changed);
+        setVisible(cardSync, loggedIn, changed);
+        setVisible(cardCal, loggedIn, changed);
+        setVisible(btnLogout, loggedIn, changed);
+
+        // Formulaire
+        boolean busy = running && (loginPending || showForm);
+        btnLogin.setEnabled(!busy);
+        btnLogin.setText(busy ? "Connexion en cours…" : "Se connecter");
+        loginProgress.setVisibility(busy ? View.VISIBLE : View.GONE);
+        loginPhase.setVisibility(busy && !phase.isEmpty() ? View.VISIBLE : View.GONE);
+        loginPhase.setText(phase);
+        String status = Store.status(this);
+        boolean err = !running && status.startsWith("⚠") && showForm;
+        loginError.setVisibility(err ? View.VISIBLE : View.GONE);
+        loginError.setText(status);
+
+        // Authenticator
+        boolean showMfa = running && mfa != null;
+        if (showMfa) {
+            mfaNumber.setVisibility(mfa.isEmpty() ? View.GONE : View.VISIBLE);
+            mfaNumber.setText(mfa);
+            mfaHint.setText(mfa.isEmpty() ? "Ouvre Microsoft Authenticator et approuve la connexion."
+                    : "Ouvre Microsoft Authenticator et saisis ce numéro.");
+        }
+        if (showMfa && cardMfa.getVisibility() != View.VISIBLE) {
+            cardMfa.setVisibility(View.VISIBLE);
+            cascade(cardMfa, 0);
+            pulseAnim = ObjectAnimator.ofPropertyValuesHolder(cardMfa,
+                    android.animation.PropertyValuesHolder.ofFloat("scaleX", 1f, 1.03f),
+                    android.animation.PropertyValuesHolder.ofFloat("scaleY", 1f, 1.03f));
+            pulseAnim.setDuration(700);
+            pulseAnim.setRepeatMode(ValueAnimator.REVERSE);
+            pulseAnim.setRepeatCount(ValueAnimator.INFINITE);
+            pulseAnim.start();
+        } else if (!showMfa && cardMfa.getVisibility() == View.VISIBLE) {
+            if (pulseAnim != null) pulseAnim.cancel();
+            cardMfa.setScaleX(1f);
+            cardMfa.setScaleY(1f);
+            cardMfa.setVisibility(View.GONE);
+        }
+
+        // Compte + synchro
+        String acc = Store.account(this);
+        accountEmail.setText(acc);
+        avatar.setText(acc.isEmpty() ? "?" : acc.substring(0, 1).toUpperCase(Locale.FRENCH));
+        accountState.setText(Store.remember(this) ? "Connecté · mémorisé" : "Connecté · cette session");
+        syncStatus.setText(status);
+        long ok = Store.lastOk(this);
+        syncLast.setText("Dernière synchro réussie : " + (ok == 0 ? "jamais"
+                : new SimpleDateFormat("EEEE dd/MM 'à' HH:mm", Locale.FRENCH).format(new Date(ok)))
+                + "\nAutomatique toutes les 6 h sur " + Store.DAYS + " jours");
+        syncProgress.setVisibility(running && loggedIn ? View.VISIBLE : View.GONE);
+        syncPhase.setVisibility(running && loggedIn && !phase.isEmpty() ? View.VISIBLE : View.GONE);
+        syncPhase.setText(phase);
+        btnSync.setEnabled(!running);
+        btnSync.setText(running ? "Synchronisation…" : "Synchroniser maintenant");
+        boolean needReconnect = !running && status.startsWith("⚠")
+                && (status.contains("Authenticator") || status.contains("Connexion bloquée")
+                || status.contains("Session expirée") || status.contains("code"));
+        btnReconnect.setVisibility(needReconnect && loggedIn ? View.VISIBLE : View.GONE);
+        String cn = Store.calendarName(this);
+        calName.setText(cn.isEmpty() ? "Agenda principal Google" : cn);
+
+        if (entering && current == TAB_LOGIN) {
+            int k = 0;
+            ViewGroup root = findViewById(R.id.connexionRoot);
+            for (int i = 0; i < root.getChildCount(); i++) {
+                View c = root.getChildAt(i);
+                if (c.getVisibility() == View.VISIBLE && c != hero) cascade(c, k++);
+            }
+        }
+    }
+
+    private void setVisible(View v, boolean show, boolean animate) {
+        int want = show ? View.VISIBLE : View.GONE;
+        if (v.getVisibility() == want) return;
+        v.setVisibility(want);
+        if (show && animate) cascade(v, 1);
+    }
+
+    private void snack(String msg) {
+        Snackbar s = Snackbar.make(nav, msg, Snackbar.LENGTH_LONG);
+        s.setAnchorView(nav);
+        s.show();
+    }
+
+    // ------------------------------------------------------------------ Programme
+
+    private void renderProgram(boolean animate) {
+        progList.removeAllViews();
+        LayoutInflater inf = LayoutInflater.from(this);
+        long now = System.currentTimeMillis();
+        List<Session> up = Store.upcoming(this);
+        int idx = 0;
+        Session next = null;
+        for (Session s : up) if (s.endMs >= now) { next = s; break; }
+
+        if (next == null) {
+            View e = inf.inflate(R.layout.item_empty, progList, false);
+            ((ImageView) e.findViewById(R.id.emptyIcon)).setImageResource(R.drawable.ic_event);
+            ((TextView) e.findViewById(R.id.emptyTitle)).setText(
+                    Store.isLoggedIn(this) ? "Aucun cours à venir" : "Pas encore de programme");
+            ((TextView) e.findViewById(R.id.emptyText)).setText(Store.isLoggedIn(this)
+                    ? "Tire vers le bas pour relancer une synchro."
+                    : "Connecte-toi dans l'onglet Connexion pour récupérer ton planning.");
+            progList.addView(e);
+            if (animate) cascade(e, 0);
+            return;
+        }
+
+        // Carte « Prochain cours »
+        View n = inf.inflate(R.layout.item_next, progList, false);
+        boolean live = next.startMs <= now;
+        ((TextView) n.findViewById(R.id.nHead)).setText(live ? "EN COURS" : "PROCHAIN COURS · " + relDay(next.startMs).toUpperCase(Locale.FRENCH));
+        ((TextView) n.findViewById(R.id.nTitle)).setText(next.summary());
+        ((TextView) n.findViewById(R.id.nTime)).setText(Session.hm(next.startMs) + " – " + Session.hm(next.endMs)
+                + (next.room.isEmpty() ? "" : "   ·   " + next.room));
+        ((TextView) n.findViewById(R.id.nWho)).setText(next.intervenants);
+        progList.addView(n);
+        if (animate) cascade(n, idx++);
+
+        LocalDate lastDay = null;
+        for (Session s : up) {
+            if (s.endMs < now) continue;
+            LocalDate d = Session.z(s.startMs).toLocalDate();
+            if (!d.equals(lastDay)) {
+                TextView h = (TextView) inf.inflate(R.layout.item_day, progList, false);
+                h.setText(relDayLong(s.startMs));
+                progList.addView(h);
+                if (animate) cascade(h, idx++);
+                lastDay = d;
+            }
+            View c = inf.inflate(R.layout.item_course, progList, false);
+            ((TextView) c.findViewById(R.id.cStart)).setText(Session.hm(s.startMs));
+            ((TextView) c.findViewById(R.id.cEnd)).setText(Session.hm(s.endMs));
+            ((TextView) c.findViewById(R.id.cTitle)).setText(s.matiere);
+            TextView note = c.findViewById(R.id.cNote);
+            if (!s.note.isEmpty()) { note.setVisibility(View.VISIBLE); note.setText(s.note); }
+            TextView room = c.findViewById(R.id.cRoom);
+            room.setText(s.room.isEmpty() ? "Lieu non précisé" : s.room);
+            room.setCompoundDrawablesRelativeWithIntrinsicBounds(tinted(R.drawable.ic_place, 16), null, null, null);
+            TextView who = c.findViewById(R.id.cWho);
+            if (s.intervenants.isEmpty()) who.setVisibility(View.GONE);
+            else {
+                who.setText(s.intervenants);
+                who.setCompoundDrawablesRelativeWithIntrinsicBounds(tinted(R.drawable.ic_person, 14), null, null, null);
+            }
+            if (s.startMs <= now && s.endMs >= now) {
+                c.findViewById(R.id.cBadge).setVisibility(View.VISIBLE);
+                c.findViewById(R.id.cBar).setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.ok)));
+            }
+            progList.addView(c);
+            if (animate) cascade(c, idx++);
+        }
+    }
+
+    private android.graphics.drawable.Drawable tinted(int res, int sizeDp) {
+        android.graphics.drawable.Drawable d = ContextCompat.getDrawable(this, res);
+        if (d == null) return null;
+        d = d.mutate();
+        d.setBounds(0, 0, dp(sizeDp), dp(sizeDp));
+        d.setTint(color(android.R.attr.textColorSecondary));
+        return scaled(d, sizeDp);
+    }
+
+    private android.graphics.drawable.Drawable scaled(android.graphics.drawable.Drawable d, int sizeDp) {
+        android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(dp(sizeDp), dp(sizeDp), android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas cv = new android.graphics.Canvas(b);
+        d.setBounds(0, 0, cv.getWidth(), cv.getHeight());
+        d.draw(cv);
+        return new android.graphics.drawable.BitmapDrawable(getResources(), b);
+    }
+
+    private String relDay(long ms) {
+        LocalDate d = Session.z(ms).toLocalDate();
+        LocalDate t = LocalDate.now(Session.PARIS);
+        if (d.equals(t)) return "Aujourd'hui";
+        if (d.equals(t.plusDays(1))) return "Demain";
+        return Session.day(ms);
+    }
+
+    private String relDayLong(long ms) {
+        LocalDate d = Session.z(ms).toLocalDate();
+        String full = d.format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.FRENCH));
+        LocalDate t = LocalDate.now(Session.PARIS);
+        if (d.equals(t)) return "Aujourd'hui · " + full;
+        if (d.equals(t.plusDays(1))) return "Demain · " + full;
+        return full;
+    }
+
+    // ------------------------------------------------------------------ Changements
+
+    private void renderChanges(boolean animate) {
+        changeList.removeAllViews();
+        LayoutInflater inf = LayoutInflater.from(this);
+        List<String> hist = Store.history(this);
+        if (hist.isEmpty()) {
+            View e = inf.inflate(R.layout.item_empty, changeList, false);
+            ((ImageView) e.findViewById(R.id.emptyIcon)).setImageResource(R.drawable.ic_history);
+            ((TextView) e.findViewById(R.id.emptyTitle)).setText("Aucun changement pour l'instant");
+            ((TextView) e.findViewById(R.id.emptyText)).setText("Les cours ajoutés, déplacés ou annulés apparaîtront ici.");
+            changeList.addView(e);
+            if (animate) cascade(e, 0);
+            return;
+        }
+        String today = new SimpleDateFormat("dd/MM", Locale.FRENCH).format(new Date());
+        String yesterday = new SimpleDateFormat("dd/MM", Locale.FRENCH).format(new Date(System.currentTimeMillis() - 86_400_000L));
+        String lastGroup = null;
+        int idx = 0;
+        for (int i = 0; i < Math.min(hist.size(), 80); i++) {
+            String line = hist.get(i);
+            int sep = line.indexOf(" · ");
+            String stamp = sep > 0 ? line.substring(0, sep) : "";
+            String text = sep > 0 ? line.substring(sep + 3) : line;
+            String day = stamp.length() >= 5 ? stamp.substring(0, 5) : "";
+            String time = stamp.length() > 6 ? stamp.substring(6) : stamp;
+            if (!TextUtils.equals(day, lastGroup)) {
+                TextView h = (TextView) inf.inflate(R.layout.item_day, changeList, false);
+                h.setText(day.equals(today) ? "Aujourd'hui" : day.equals(yesterday) ? "Hier" : "Le " + day);
+                changeList.addView(h);
+                if (animate) cascade(h, idx++);
+                lastGroup = day;
+            }
+            int icon, col;
+            String kind;
+            if (text.startsWith("Ajout : ")) {
+                kind = "Cours ajouté"; icon = R.drawable.ic_add; col = R.color.ok; text = text.substring(8);
+            } else if (text.startsWith("Annulé : ")) {
+                kind = "Cours annulé"; icon = R.drawable.ic_close; col = R.color.cancel; text = text.substring(9);
+            } else if (text.startsWith("Erreur : ")) {
+                kind = "Synchro impossible"; icon = R.drawable.ic_warning; col = R.color.error; text = text.substring(9);
+            } else if (text.startsWith("Synchro OK")) {
+                kind = "Synchro réussie"; icon = R.drawable.ic_check; col = R.color.neutral;
+                int p = text.indexOf(": ");
+                text = p > 0 ? text.substring(p + 2) : text;
+            } else if (text.contains("doublon") || text.contains("aucune suppression")) {
+                kind = "Avertissement"; icon = R.drawable.ic_warning; col = R.color.edit;
+            } else {
+                kind = "Cours modifié"; icon = R.drawable.ic_edit; col = R.color.edit;
+            }
+            View c = inf.inflate(R.layout.item_change, changeList, false);
+            FrameLayout bg = c.findViewById(R.id.chIconBg);
+            bg.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, col)));
+            ((ImageView) c.findViewById(R.id.chIcon)).setImageResource(icon);
+            TextView k = c.findViewById(R.id.chKind);
+            k.setText(kind);
+            k.setTextColor(ContextCompat.getColor(this, col));
+            ((TextView) c.findViewById(R.id.chText)).setText(text);
+            ((TextView) c.findViewById(R.id.chTime)).setText(time);
+            changeList.addView(c);
+            if (animate) cascade(c, idx++);
+        }
+    }
+
+    // ------------------------------------------------------------------ Agenda & permissions
+
+    private void askPermissions() {
+        String[] perms = {Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR,
+                Manifest.permission.POST_NOTIFICATIONS};
+        boolean need = false;
+        for (String p : perms) if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) need = true;
+        if (need) requestPermissions(perms, 1);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        ensureCalendar();
+        if (current == TAB_LOGIN) renderLogin(false);
+    }
+
+    private void ensureCalendar() {
+        if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) return;
+        if (CalendarSync.byId(this, Store.calendarId(this)) == null) {
+            CalendarSync.Cal k = CalendarSync.defaultCalendar(this);
+            if (k != null) Store.setCalendarId(this, k.id, k.toString());
+        }
+    }
+
+    private void chooseCalendar() {
+        if (checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
+            askPermissions();
+            return;
+        }
+        List<CalendarSync.Cal> cals = CalendarSync.calendars(this);
+        if (cals.isEmpty()) {
+            snack("Aucun agenda modifiable trouvé");
+            return;
+        }
+        String[] names = new String[cals.size()];
+        int checked = -1;
+        for (int i = 0; i < names.length; i++) {
+            names[i] = cals.get(i).toString();
+            if (cals.get(i).id == Store.calendarId(this)) checked = i;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Agenda de destination")
+                .setSingleChoiceItems(names, checked, (d, i) -> {
+                    Store.setCalendarId(this, cals.get(i).id, names[i]);
+                    d.dismiss();
+                    snack("Agenda choisi : " + names[i]);
+                })
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    // ------------------------------------------------------------------ Cycle de vie
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Store.prefs(this).registerOnSharedPreferenceChangeListener(this);
+        ensureCalendar();
+        renderToolbar();
+        if (current == TAB_LOGIN) renderLogin(false);
+        if (current == TAB_PROGRAM) renderProgram(false);
+        if (current == TAB_CHANGES) renderChanges(false);
+        NextCourseWidget.updateAll(this);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Store.prefs(this).unregisterOnSharedPreferenceChangeListener(this);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (floatAnim != null) floatAnim.cancel();
+        if (pulseAnim != null) pulseAnim.cancel();
+        super.onDestroy();
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences p, String key) {
+        if (key == null) return;
+        runOnUiThread(() -> {
+            renderToolbar();
+            switch (key) {
+                case "upcoming":
+                    if (current == TAB_PROGRAM) renderProgram(true);
+                    NextCourseWidget.updateAll(this);
+                    break;
+                case "history":
+                    if (current == TAB_CHANGES) renderChanges(true);
+                    break;
+                case "running":
+                case "phase":
+                case "mfa":
+                case "status":
+                case "lastOk":
+                case "calName":
+                case "loggedOut":
+                    if (current == TAB_LOGIN || loginPending) renderLogin(false);
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+}
+=====FILE: app/src/main/java/fr/dadouch/builderssync/Notif.java=====
+package fr.dadouch.builderssync;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+
+import java.util.List;
+
+public class Notif {
+    static final String CH_CHANGES = "changes", CH_ERRORS = "errors";
+    static final int ID_CHANGES = 1, ID_ERROR = 2, ID_MFA = 3;
+
+    static void channels(Context c) {
+        NotificationManager nm = c.getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new NotificationChannel(CH_CHANGES, "Changements de planning",
+                NotificationManager.IMPORTANCE_DEFAULT));
+        nm.createNotificationChannel(new NotificationChannel(CH_ERRORS, "Connexion et erreurs",
+                NotificationManager.IMPORTANCE_HIGH));
+    }
+
+    private static PendingIntent open(Context c, int tab) {
+        Intent i = new Intent(c, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(MainActivity.EXTRA_TAB, tab);
+        return PendingIntent.getActivity(c, 100 + tab, i,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    private static void post(Context c, int id, Notification n) {
+        try {
+            c.getSystemService(NotificationManager.class).notify(id, n);
+        } catch (SecurityException ignored) { } // notifications refusées
+    }
+
+    static void changes(Context c, List<String> lines) {
+        channels(c);
+        Notification.InboxStyle st = new Notification.InboxStyle();
+        for (String l : lines) st.addLine(l);
+        String title = lines.size() == 1 ? "1 changement de planning" : lines.size() + " changements de planning";
+        post(c, ID_CHANGES, new Notification.Builder(c, CH_CHANGES)
+                .setSmallIcon(R.drawable.ic_notif)
+                .setContentTitle(title)
+                .setContentText(lines.get(0))
+                .setStyle(st)
+                .setContentIntent(open(c, MainActivity.TAB_CHANGES))
+                .setAutoCancel(true)
+                .build());
+    }
+
+    static void error(Context c, String message, boolean openLogin) {
+        channels(c);
+        post(c, ID_ERROR, new Notification.Builder(c, CH_ERRORS)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle("Builders Sync : synchro impossible")
+                .setContentText(message)
+                .setStyle(new Notification.BigTextStyle().bigText(message
+                        + (openLogin ? "\nTouche ici pour ouvrir l'app." : "")))
+                .setContentIntent(open(c, MainActivity.TAB_LOGIN))
+                .setAutoCancel(true)
+                .build());
+    }
+
+    static void mfa(Context c, String number) {
+        channels(c);
+        String txt = number.isEmpty() ? "Ouvre Microsoft Authenticator et approuve la connexion."
+                : "Ouvre Microsoft Authenticator et saisis le numéro " + number + ".";
+        post(c, ID_MFA, new Notification.Builder(c, CH_ERRORS)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle("Validation Microsoft demandée")
+                .setContentText(txt)
+                .setStyle(new Notification.BigTextStyle().bigText(txt))
+                .setTimeoutAfter(4 * 60_000)
+                .setContentIntent(open(c, MainActivity.TAB_LOGIN))
+                .setAutoCancel(true)
+                .build());
+    }
+
+    static void cancelMfa(Context c) {
+        c.getSystemService(NotificationManager.class).cancel(ID_MFA);
+    }
+
+    static void cancelError(Context c) {
+        c.getSystemService(NotificationManager.class).cancel(ID_ERROR);
+    }
+}
+=====FILE: app/src/main/java/fr/dadouch/builderssync/Store.java=====
+package fr.dadouch.builderssync;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+
+import androidx.security.crypto.EncryptedSharedPreferences;
+import androidx.security.crypto.MasterKey;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+/** Stockage local : identifiants chiffrés + état de la synchro. */
+public class Store {
+    public static final int DAYS = 30;
+    private static final int HISTORY_MAX = 150;
+
+    public static SharedPreferences prefs(Context c) {
+        return c.getApplicationContext().getSharedPreferences("state", Context.MODE_PRIVATE);
+    }
+
+    private static SharedPreferences secure(Context c) {
+        try {
+            MasterKey key = new MasterKey.Builder(c.getApplicationContext())
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
+            return EncryptedSharedPreferences.create(c.getApplicationContext(), "creds", key,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
+        } catch (Exception e) {
+            throw new RuntimeException("Stockage chiffré indisponible", e);
+        }
+    }
+
+    // Identifiants « session seulement » (case « Se souvenir de moi » décochée) : en mémoire.
+    private static volatile String memEmail = "", memPwd = "";
+
+    public static String savedEmail(Context c) { return secure(c).getString("email", ""); }
+
+    public static String email(Context c) {
+        String s = savedEmail(c);
+        return s.isEmpty() ? memEmail : s;
+    }
+
+    public static String password(Context c) {
+        String s = secure(c).getString("pwd", "");
+        return s.isEmpty() ? memPwd : s;
+    }
+
+    public static boolean hasCreds(Context c) { return !email(c).isEmpty() && !password(c).isEmpty(); }
+
+    public static void saveCreds(Context c, String email, String pwd) {
+        secure(c).edit().putString("email", email.trim()).putString("pwd", pwd).apply();
+    }
+
+    /** Connexion depuis l'écran d'accueil. */
+    public static void login(Context c, String email, String pwd, boolean remember) {
+        if (remember) {
+            saveCreds(c, email, pwd);
+            memEmail = "";
+            memPwd = "";
+        } else {
+            secure(c).edit().clear().apply();
+            memEmail = email.trim();
+            memPwd = pwd;
+        }
+        prefs(c).edit().putBoolean("loggedOut", false).putBoolean("remember", remember)
+                .putString("account", email.trim()).apply();
+        clearError(c);
+    }
+
+    public static void logout(Context c) {
+        secure(c).edit().clear().apply();
+        memEmail = "";
+        memPwd = "";
+        prefs(c).edit().putBoolean("loggedOut", true).remove("mfa").remove("phase")
+                .putString("status", "Déconnecté").apply();
+    }
+
+    public static boolean isLoggedOut(Context c) { return prefs(c).getBoolean("loggedOut", false); }
+    public static boolean remember(Context c) { return prefs(c).getBoolean("remember", true); }
+    public static String account(Context c) {
+        String a = prefs(c).getString("account", "");
+        return a.isEmpty() ? email(c) : a;
+    }
+
+    /** Connecté = pas déconnecté et au moins une synchro réussie avec ce compte. */
+    public static boolean isLoggedIn(Context c) {
+        return !isLoggedOut(c) && lastOk(c) > 0 && !account(c).isEmpty();
+    }
+
+    // --- Suivi en direct de la synchro (affiché par l'app) ---
+    public static void setRunning(Context c, boolean r) {
+        SharedPreferences.Editor e = prefs(c).edit().putBoolean("running", r);
+        if (!r) e.remove("phase").remove("mfa");
+        e.apply();
+    }
+    public static boolean running(Context c) { return prefs(c).getBoolean("running", false); }
+    public static void setPhase(Context c, String p) {
+        if (!p.equals(phase(c))) prefs(c).edit().putString("phase", p).apply();
+    }
+    public static String phase(Context c) { return prefs(c).getString("phase", ""); }
+    public static void setMfa(Context c, String n) { prefs(c).edit().putString("mfa", n == null ? "" : n).apply(); }
+    public static String mfa(Context c) { return prefs(c).getString("mfa", null); }
+
+    public static long calendarId(Context c) { return prefs(c).getLong("calId", -1); }
+    public static void setCalendarId(Context c, long id, String name) {
+        prefs(c).edit().putLong("calId", id).putString("calName", name).apply();
+    }
+    public static String calendarName(Context c) { return prefs(c).getString("calName", ""); }
+
+    public static void setStatus(Context c, String status) {
+        prefs(c).edit().putString("status", status).putLong("statusAt", System.currentTimeMillis()).apply();
+    }
+    public static String status(Context c) { return prefs(c).getString("status", "Jamais synchronisé"); }
+    public static long statusAt(Context c) { return prefs(c).getLong("statusAt", 0); }
+
+    public static void setLastOk(Context c) { prefs(c).edit().putLong("lastOk", System.currentTimeMillis()).apply(); }
+    public static long lastOk(Context c) { return prefs(c).getLong("lastOk", 0); }
+
+    // --- Instantané du portail (pour détecter titre/intervenant modifiés) ---
+    public static JSONObject snapshot(Context c) {
+        try { return new JSONObject(prefs(c).getString("snapshot", "{}")); }
+        catch (JSONException e) { return new JSONObject(); }
+    }
+    public static void saveSnapshot(Context c, JSONObject o) {
+        prefs(c).edit().putString("snapshot", o.toString()).apply();
+    }
+
+    // --- Prochains cours ---
+    public static void saveUpcoming(Context c, List<Session> list) {
+        JSONArray a = new JSONArray();
+        for (Session s : list) a.put(s.toJson());
+        prefs(c).edit().putString("upcoming", a.toString()).apply();
+    }
+    public static List<Session> upcoming(Context c) {
+        List<Session> out = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(prefs(c).getString("upcoming", "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(Session.fromJson(a.getJSONObject(i)));
+        } catch (JSONException ignored) { }
+        return out;
+    }
+
+    // --- Historique ---
+    public static void addHistory(Context c, List<String> lines) {
+        if (lines.isEmpty()) return;
+        String stamp = new SimpleDateFormat("dd/MM HH:mm", Locale.FRENCH).format(new Date());
+        JSONArray old;
+        try { old = new JSONArray(prefs(c).getString("history", "[]")); }
+        catch (JSONException e) { old = new JSONArray(); }
+        JSONArray a = new JSONArray();
+        for (String l : lines) a.put(stamp + " · " + l);
+        for (int i = 0; i < old.length() && a.length() < HISTORY_MAX; i++) a.put(old.optString(i));
+        prefs(c).edit().putString("history", a.toString()).apply();
+    }
+    public static List<String> history(Context c) {
+        List<String> out = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(prefs(c).getString("history", "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(a.optString(i));
+        } catch (JSONException ignored) { }
+        return out;
+    }
+
+    // --- Anti-spam des notifications d'erreur ---
+    public static boolean shouldNotifyError(Context c, String code) {
+        SharedPreferences p = prefs(c);
+        String last = p.getString("errCode", "");
+        long at = p.getLong("errAt", 0);
+        boolean notify = !code.equals(last) || System.currentTimeMillis() - at > 12L * 3600_000L;
+        if (notify) p.edit().putString("errCode", code).putLong("errAt", System.currentTimeMillis()).apply();
+        return notify;
+    }
+    public static void clearError(Context c) {
+        prefs(c).edit().remove("errCode").remove("errAt").apply();
+    }
+}
+=====FILE: app/src/main/java/fr/dadouch/builderssync/SyncWorker.java=====
+package fr.dadouch.builderssync;
+
+import android.Manifest;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.webkit.WebView;
+
+import androidx.annotation.NonNull;
+import androidx.work.Constraints;
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
+import androidx.work.Worker;
+import androidx.work.WorkerParameters;
+
+import org.json.JSONArray;
+
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class SyncWorker extends Worker {
+    private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+    private static final long LOGIN_TIMEOUT = 150_000;
+
+    public SyncWorker(@NonNull Context c, @NonNull WorkerParameters p) { super(c, p); }
+
+    private static Constraints net() {
+        return new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
+    }
+
+    public static void schedule(Context c) {
+        PeriodicWorkRequest req = new PeriodicWorkRequest.Builder(SyncWorker.class, 6, TimeUnit.HOURS)
+                .setConstraints(net()).build();
+        WorkManager.getInstance(c).enqueueUniquePeriodicWork("periodic", ExistingPeriodicWorkPolicy.KEEP, req);
+    }
+
+    public static void runNow(Context c) {
+        OneTimeWorkRequest req = new OneTimeWorkRequest.Builder(SyncWorker.class).setConstraints(net()).build();
+        WorkManager.getInstance(c).enqueueUniqueWork("now", ExistingWorkPolicy.KEEP, req);
+    }
+
+    public static boolean isRunning() { return RUNNING.get(); }
+
+    @NonNull
+    @Override
+    public Result doWork() {
+        if (!RUNNING.compareAndSet(false, true)) return Result.success();
+        try {
+            run(getApplicationContext());
+        } catch (Exception e) {
+            fail(getApplicationContext(), "crash", "Erreur inattendue : " + e.getMessage(), false);
+        } finally {
+            Store.setRunning(getApplicationContext(), false);
+            RUNNING.set(false);
+        }
+        return Result.success();
+    }
+
+    private static void fail(Context c, String code, String msg, boolean login) {
+        Store.setStatus(c, "⚠ " + msg);
+        Store.addHistory(c, java.util.Collections.singletonList("Erreur : " + msg));
+        if (Store.shouldNotifyError(c, code)) Notif.error(c, msg, login);
+    }
+
+    private void run(Context c) throws InterruptedException {
+        if (c.checkSelfPermission(Manifest.permission.WRITE_CALENDAR) != PackageManager.PERMISSION_GRANTED
+                || c.checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
+            fail(c, "perm", "Autorisation d'accès à l'agenda manquante : ouvre l'app.", false);
+            return;
+        }
+        if (Store.isLoggedOut(c)) return; // l'utilisateur s'est déconnecté
+        CalendarSync.Cal cal = CalendarSync.byId(c, Store.calendarId(c));
+        if (cal == null) cal = CalendarSync.defaultCalendar(c);
+        if (cal == null) {
+            fail(c, "nocal", "Aucun agenda Google trouvé sur le téléphone.", false);
+            return;
+        }
+
+        Store.setStatus(c, "Synchronisation en cours…");
+        Store.setRunning(c, true);
+        try {
+            runSync(c, cal);
+        } finally {
+            Store.setRunning(c, false);
+        }
+    }
+
+    private void runSync(Context c, CalendarSync.Cal cal) throws InterruptedException {
+        final JSONArray[] result = {null};
+        final String[] err = {null, null};
+        final CountDownLatch latch = new CountDownLatch(1);
+        final WebView[] holder = {null};
+        final PortalSession[] ps = {null};
+        int weeks = Store.DAYS / 7 + 2;
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(() -> {
+            try {
+                holder[0] = PortalSession.headless(c);
+                ps[0] = new PortalSession(c, holder[0], true, LOGIN_TIMEOUT, weeks, new PortalSession.Listener() {
+                    public void onStatus(String s) { Store.setPhase(c, s); }
+                    public void onMfa(String n) { Store.setMfa(c, n); Notif.mfa(c, n); }
+                    public void onReady() { }
+                    public void onResult(JSONArray a) { result[0] = a; latch.countDown(); }
+                    public void onError(String code, String m) { err[0] = code; err[1] = m; latch.countDown(); }
+                });
+                ps[0].start();
+            } catch (Exception e) {
+                err[0] = "webview";
+                err[1] = "Navigateur interne indisponible : " + e.getMessage();
+                latch.countDown();
+            }
+        });
+        boolean finished = latch.await(9, TimeUnit.MINUTES);
+        main.post(() -> {
+            if (ps[0] != null) ps[0].cancel();
+            if (holder[0] != null) { holder[0].stopLoading(); holder[0].destroy(); }
+        });
+        Notif.cancelMfa(c);
+        if (!finished) { fail(c, "timeout", "Délai dépassé pendant la synchro.", false); return; }
+        if (err[0] != null) {
+            boolean login = err[0].startsWith("mfa") || err[0].equals("timeout") || err[0].equals("need_user")
+                    || err[0].equals("bad_credentials");
+            if (err[0].equals("need_user") && !Store.hasCreds(c))
+                err[1] = "Session expirée : reconnecte-toi dans l'app.";
+            fail(c, err[0], err[1] + " Rien n'a été modifié dans l'agenda.", login);
+            return;
+        }
+
+        // Filtrer la période : aujourd'hui 00:00 → aujourd'hui + DAYS jours inclus.
+        LocalDate today = LocalDate.now(Session.PARIS);
+        long from = today.atStartOfDay(Session.PARIS).toInstant().toEpochMilli();
+        long to = today.plusDays(Store.DAYS + 1).atStartOfDay(Session.PARIS).toInstant().toEpochMilli();
+        List<Session> list = new ArrayList<>();
+        try {
+            for (int i = 0; i < result[0].length(); i++) {
+                Session s = Session.fromPortal(result[0].getJSONObject(i));
+                if (s.startMs >= from && s.startMs < to && !s.id.isEmpty()) list.add(s);
+            }
+        } catch (Exception e) {
+            fail(c, "format", "Format du planning inattendu (" + e.getMessage() + ").", false);
+            return;
+        }
+        list.sort(Comparator.comparingLong(s -> s.startMs));
+
+        CalendarSync.Result r = CalendarSync.sync(c, cal, list, from, to);
+        Store.saveUpcoming(c, list);
+        Store.setLastOk(c);
+        Store.clearError(c);
+        Notif.cancelError(c);
+        List<String> hist = new ArrayList<>(r.changes);
+        hist.addAll(r.warnings);
+        Store.addHistory(c, hist.isEmpty()
+                ? java.util.Collections.singletonList("Synchro OK : aucun changement (" + list.size() + " séances)")
+                : hist);
+        Store.setStatus(c, r.changes.isEmpty()
+                ? "À jour : " + list.size() + " séances, aucun changement"
+                : "À jour : " + r.changes.size() + " changement(s) appliqué(s)");
+        if (!r.changes.isEmpty()) Notif.changes(c, r.changes);
+        NextCourseWidget.updateAll(c);
+    }
+}
+=====FILE: app/src/main/res/drawable/bg_bar.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="4dp" />
+</shape>
+=====FILE: app/src/main/res/drawable/bg_chip.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="100dp" />
+</shape>
+=====FILE: app/src/main/res/drawable/bg_circle.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="#FFFFFFFF" />
+</shape>
+=====FILE: app/src/main/res/drawable/bg_next.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="315" android:startColor="#FF2F7BC8" android:endColor="#FF153E66" />
+    <corners android:radius="24dp" />
+</shape>
+=====FILE: app/src/main/res/drawable/ic_add.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M19,13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_bg.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="0" android:startY="0"
+                android:endX="108" android:endY="108">
+                <item android:offset="0" android:color="#FF2F7BC8" />
+                <item android:offset="1" android:color="#FF153E66" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
+=====FILE: app/src/main/res/drawable/ic_check.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_close.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_edit.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M3,17.25V21h3.75L17.81,9.94l-3.75,-3.75L3,17.25zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_event.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M19,4h-1V2h-2v2H8V2H6v2H5C3.89,4 3.01,4.9 3.01,6L3,20c0,1.1 0.89,2 2,2h14c1.1,0 2,-0.9 2,-2V6C21,4.9 20.1,4 19,4zM19,20H5V10h14V20zM9,14H7v-2h2V14zM13,14h-2v-2h2V14zM17,14h-2v-2h2V14zM9,18H7v-2h2V18zM13,18h-2v-2h2V18zM17,18h-2v-2h2V18z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_fg.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- ombre douce -->
+    <path android:fillColor="#33000000"
+        android:pathData="M37,39h36a4,4 0,0 1,4 4v34a4,4 0,0 1,-4 4h-36a4,4 0,0 1,-4 -4v-34a4,4 0,0 1,4 -4z" />
+    <!-- feuille de calendrier -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M36,36h36a4,4 0,0 1,4 4v34a4,4 0,0 1,-4 4h-36a4,4 0,0 1,-4 -4v-34a4,4 0,0 1,4 -4z" />
+    <!-- bandeau -->
+    <path android:fillColor="#F59E0B"
+        android:pathData="M36,36h36a4,4 0,0 1,4 4v8h-44v-8a4,4 0,0 1,4 -4z" />
+    <!-- anneaux -->
+    <path android:fillColor="#0F2E4D"
+        android:pathData="M41,31h4a1,1 0,0 1,1 1v9a1,1 0,0 1,-1 1h-4a1,1 0,0 1,-1 -1v-9a1,1 0,0 1,1 -1zM63,31h4a1,1 0,0 1,1 1v9a1,1 0,0 1,-1 1h-4a1,1 0,0 1,-1 -1v-9a1,1 0,0 1,1 -1z" />
+    <!-- coche de synchronisation -->
+    <path android:strokeColor="#1F4E79" android:strokeWidth="5"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M43,62l7,7l15,-15" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_history.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M13,3c-4.97,0 -9,4.03 -9,9L1,12l3.89,3.89 0.07,0.14L9,12L6,12c0,-3.87 3.13,-7 7,-7s7,3.13 7,7 -3.13,7 -7,7c-1.93,0 -3.68,-0.79 -4.94,-2.06l-1.42,1.42C8.27,19.99 10.51,21 13,21c4.97,0 9,-4.03 9,-9s-4.03,-9 -9,-9zM12,8v5l4.28,2.54 0.72,-1.21 -3.5,-2.08L13.5,8L12,8z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_lock.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10c0,-1.1 -0.9,-2 -2,-2zM12,17c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2zM15.1,8H8.9V6c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_login.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M11,7L9.6,8.4l2.6,2.6H2v2h10.2l-2.6,2.6L11,17l5,-5L11,7zM20,19h-8v2h8c1.1,0 2,-0.9 2,-2V5c0,-1.1 -0.9,-2 -2,-2h-8v2h8V19z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_logout.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M17,7l-1.41,1.41L18.17,11H8v2h10.17l-2.58,2.58L17,17l5,-5zM4,5h8V3H4c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h8v-2H4V5z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_mail.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M20,4H4c-1.1,0 -1.99,0.9 -1.99,2L2,18c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V6c0,-1.1 -0.9,-2 -2,-2zM20,8l-8,5 -8,-5V6l8,5 8,-5v2z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_mono.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:fillType="evenOdd"
+        android:pathData="M36,36h36a4,4 0,0 1,4 4v34a4,4 0,0 1,-4 4h-36a4,4 0,0 1,-4 -4v-34a4,4 0,0 1,4 -4zM37,52v21h34v-21z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M41,31h4v11h-4zM63,31h4v11h-4z" />
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="5"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M45,62l6,6l12,-12" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_notif.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M19,4h-1V2h-2v2H8V2H6v2H5C3.89,4 3.01,4.9 3.01,6L3,20c0,1.1 0.89,2 2,2h14c1.1,0 2,-0.9 2,-2V6C21,4.9 20.1,4 19,4zM19,20H5V10h14V20zM9,14H7v-2h2V14zM13,14h-2v-2h2V14zM17,14h-2v-2h2V14zM9,18H7v-2h2V18zM13,18h-2v-2h2V18zM17,18h-2v-2h2V18z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_open.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M19,19H5V5h7V3H5c-1.11,0 -2,0.9 -2,2v14c0,1.1 0.89,2 2,2h14c1.1,0 2,-0.9 2,-2v-7h-2v7zM14,3v2h3.59l-9.83,9.83 1.41,1.41L19,6.41V10h2V3h-7z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_person.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M12,12c2.21,0 4,-1.79 4,-4s-1.79,-4 -4,-4 -4,1.79 -4,4 1.79,4 4,4zM12,14c-2.67,0 -8,1.34 -8,4v2h16v-2c0,-2.66 -5.33,-4 -8,-4z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_place.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M12,2C8.13,2 5,5.13 5,9c0,5.25 7,13 7,13s7,-7.75 7,-13c0,-3.87 -3.13,-7 -7,-7zM12,11.5c-1.38,0 -2.5,-1.12 -2.5,-2.5s1.12,-2.5 2.5,-2.5 2.5,1.12 2.5,2.5 -1.12,2.5 -2.5,2.5z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_sync.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M12,4V1L8,5l4,4V6c3.31,0 6,2.69 6,6c0,1.01 -0.25,1.97 -0.7,2.8l1.46,1.46C19.54,15.03 20,13.57 20,12C20,7.58 16.42,4 12,4zM12,18c-3.31,0 -6,-2.69 -6,-6c0,-1.01 0.25,-1.97 0.7,-2.8L5.24,7.74C4.46,8.97 4,10.43 4,12c0,4.42 3.58,8 8,8v3l4,-4l-4,-4V18z" />
+</vector>
+=====FILE: app/src/main/res/drawable/ic_warning.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <path android:fillColor="@android:color/white"
+        android:pathData="M1,21h22L12,2 1,21zM13,18h-2v-2h2v2zM13,14h-2v-4h2v4z" />
+</vector>
+=====FILE: app/src/main/res/layout/activity_main.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        app:titleTextAppearance="?attr/textAppearanceTitleLarge"
+        app:subtitleTextAppearance="?attr/textAppearanceBodySmall" />
+
+    <com.google.android.material.progressindicator.LinearProgressIndicator
+        android:id="@+id/topProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:indeterminate="true"
+        android:visibility="invisible" />
+
+    <FrameLayout
+        android:id="@+id/container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <include
+            android:id="@+id/tabConnexion"
+            layout="@layout/tab_connexion"
+            android:visibility="gone" />
+
+        <include
+            android:id="@+id/tabProgramme"
+            layout="@layout/tab_programme"
+            android:visibility="gone" />
+
+        <include
+            android:id="@+id/tabChangements"
+            layout="@layout/tab_changements"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
+</LinearLayout>
+=====FILE: app/src/main/res/layout/item_change.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    style="?attr/materialCardViewFilledStyle"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    app:cardBackgroundColor="?attr/colorSurfaceVariant"
+    app:cardCornerRadius="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp">
+
+        <FrameLayout
+            android:id="@+id/chIconBg"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_circle">
+
+            <ImageView
+                android:id="@+id/chIcon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="center"
+                android:contentDescription="@null"
+                app:tint="#FFFFFFFF" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/chKind"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+            <TextView
+                android:id="@+id/chText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/chTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+        </LinearLayout>
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+=====FILE: app/src/main/res/layout/item_course.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    style="?attr/materialCardViewFilledStyle"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="10dp"
+    app:cardBackgroundColor="?attr/colorSurfaceVariant"
+    app:cardCornerRadius="18dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="14dp">
+
+        <LinearLayout
+            android:layout_width="58dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/cStart"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/cEnd"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+        </LinearLayout>
+
+        <View
+            android:id="@+id/cBar"
+            android:layout_width="4dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_bar"
+            android:backgroundTint="?attr/colorPrimary" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/cBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:background="@drawable/bg_chip"
+                android:backgroundTint="@color/ok"
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="2dp"
+                android:text="EN COURS"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="#FFFFFFFF"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/cTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+            <TextView
+                android:id="@+id/cNote"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/bg_chip"
+                android:backgroundTint="?attr/colorSecondaryContainer"
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="2dp"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="?attr/colorOnSecondaryContainer"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/cRoom"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:drawablePadding="6dp"
+                android:gravity="center_vertical"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:id="@+id/cWho"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:drawablePadding="6dp"
+                android:gravity="center_vertical"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+        </LinearLayout>
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+=====FILE: app/src/main/res/layout/item_day.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/dayText"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:letterSpacing="0.06"
+    android:paddingStart="4dp"
+    android:paddingTop="18dp"
+    android:paddingBottom="8dp"
+    android:textAllCaps="true"
+    android:textAppearance="?attr/textAppearanceTitleSmall"
+    android:textColor="?attr/colorPrimary" />
+=====FILE: app/src/main/res/layout/item_empty.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:paddingTop="72dp"
+    android:paddingBottom="32dp">
+
+    <ImageView
+        android:id="@+id/emptyIcon"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:alpha="0.6"
+        android:contentDescription="@null"
+        app:tint="?attr/colorPrimary" />
+
+    <TextView
+        android:id="@+id/emptyTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+    <TextView
+        android:id="@+id/emptyText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textColor="?android:attr/textColorSecondary" />
+</LinearLayout>
+=====FILE: app/src/main/res/layout/item_next.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/bg_next"
+    android:elevation="4dp"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/nHead"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:letterSpacing="0.08"
+        android:text="PROCHAIN COURS"
+        android:textAppearance="?attr/textAppearanceLabelMedium"
+        android:textColor="#FFFFD27F" />
+
+    <TextView
+        android:id="@+id/nTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textAppearance="?attr/textAppearanceTitleLarge"
+        android:textColor="#FFFFFFFF"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/nTime"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textAppearance="?attr/textAppearanceBodyLarge"
+        android:textColor="#FFE3ECF7" />
+
+    <TextView
+        android:id="@+id/nWho"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="#FFC9D8EA" />
+</LinearLayout>
+=====FILE: app/src/main/res/layout/tab_changements.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:id="@+id/changeList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="24dp" />
+</androidx.core.widget.NestedScrollView>
+=====FILE: app/src/main/res/layout/tab_connexion.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:id="@+id/connexionRoot"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:animateLayoutChanges="true"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="24dp">
+
+        <!-- En-tête d'accueil -->
+        <LinearLayout
+            android:id="@+id/hero"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingTop="16dp"
+            android:paddingBottom="20dp">
+
+            <ImageView
+                android:id="@+id/heroIcon"
+                android:layout_width="104dp"
+                android:layout_height="104dp"
+                android:contentDescription="@null"
+                android:elevation="6dp"
+                android:src="@mipmap/ic_launcher" />
+
+            <TextView
+                android:id="@+id/heroTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Bienvenue"
+                android:textAppearance="?attr/textAppearanceHeadlineMedium"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/heroSubtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:text="Connecte-toi avec ton compte Microsoft de l'école pour synchroniser ton planning avec Google Agenda."
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="?android:attr/textColorSecondary" />
+        </LinearLayout>
+
+        <!-- Formulaire de connexion -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardLogin"
+            style="?attr/materialCardViewElevatedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="24dp">
+
+            <LinearLayout
+                android:id="@+id/loginInner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:animateLayoutChanges="true"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Connexion"
+                    android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/layoutEmail"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:hint="E-mail de l'école"
+                    app:startIconDrawable="@drawable/ic_mail">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/inputEmail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:autofillHints="emailAddress"
+                        android:imeOptions="actionNext"
+                        android:inputType="textEmailAddress"
+                        android:maxLines="1" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/layoutPassword"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:hint="Mot de passe"
+                    app:endIconMode="password_toggle"
+                    app:startIconDrawable="@drawable/ic_lock">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/inputPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:autofillHints="password"
+                        android:imeOptions="actionDone"
+                        android:inputType="textPassword"
+                        android:maxLines="1" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.checkbox.MaterialCheckBox
+                    android:id="@+id/checkRemember"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:checked="true"
+                    android:text="Se souvenir de moi" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Se connecter"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    app:cornerRadius="16dp"
+                    app:icon="@drawable/ic_login"
+                    app:iconGravity="textStart" />
+
+                <com.google.android.material.progressindicator.LinearProgressIndicator
+                    android:id="@+id/loginProgress"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:indeterminate="true"
+                    android:visibility="gone"
+                    app:trackCornerRadius="4dp" />
+
+                <TextView
+                    android:id="@+id/loginPhase"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/loginError"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textColor="@color/error"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:drawablePadding="8dp"
+                    android:text="Ton mot de passe est chiffré sur ce téléphone et n'est envoyé qu'à la page de connexion Microsoft."
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?android:attr/textColorSecondary" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnOpenWeb"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="4dp"
+                    android:text="Ouvrir la page de connexion Microsoft"
+                    app:icon="@drawable/ic_open" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Validation Authenticator -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardMfa"
+            style="?attr/materialCardViewFilledStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            app:cardBackgroundColor="?attr/colorSecondaryContainer"
+            app:cardCornerRadius="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Validation Authenticator"
+                    android:textAppearance="?attr/textAppearanceTitleMedium"
+                    android:textColor="?attr/colorOnSecondaryContainer" />
+
+                <TextView
+                    android:id="@+id/mfaNumber"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="—"
+                    android:textAppearance="?attr/textAppearanceDisplayMedium"
+                    android:textColor="?attr/colorOnSecondaryContainer"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/mfaHint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center"
+                    android:text="Ouvre Microsoft Authenticator et saisis ce numéro."
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textColor="?attr/colorOnSecondaryContainer" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Compte connecté -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardAccount"
+            style="?attr/materialCardViewElevatedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            app:cardCornerRadius="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/avatar"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:background="@drawable/bg_circle"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:gravity="center"
+                    android:text="M"
+                    android:textAppearance="?attr/textAppearanceTitleLarge"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/accountEmail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+                    <TextView
+                        android:id="@+id/accountState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_chip"
+                        android:backgroundTint="?attr/colorPrimaryContainer"
+                        android:paddingStart="10dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="3dp"
+                        android:textAppearance="?attr/textAppearanceLabelMedium"
+                        android:textColor="?attr/colorOnPrimaryContainer" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Synchronisation -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardSync"
+            style="?attr/materialCardViewElevatedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            app:cardCornerRadius="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:animateLayoutChanges="true"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Synchronisation"
+                    android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+                <TextView
+                    android:id="@+id/syncStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+                <TextView
+                    android:id="@+id/syncLast"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?android:attr/textColorSecondary" />
+
+                <com.google.android.material.progressindicator.LinearProgressIndicator
+                    android:id="@+id/syncProgress"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:indeterminate="true"
+                    android:visibility="gone"
+                    app:trackCornerRadius="4dp" />
+
+                <TextView
+                    android:id="@+id/syncPhase"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:visibility="gone" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSync"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:text="Synchroniser maintenant"
+                    app:cornerRadius="16dp"
+                    app:icon="@drawable/ic_sync"
+                    app:iconGravity="textStart" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnReconnect"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Se reconnecter (page Microsoft)"
+                    android:visibility="gone"
+                    app:cornerRadius="16dp"
+                    app:icon="@drawable/ic_open"
+                    app:iconGravity="textStart" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Agenda -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardCal"
+            style="?attr/materialCardViewElevatedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            app:cardCornerRadius="24dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="16dp">
+
+                <ImageView
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_event"
+                    app:tint="?attr/colorPrimary" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Agenda Google"
+                        android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+                    <TextView
+                        android:id="@+id/calName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="?android:attr/textColorSecondary" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCal"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Changer" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnLogout"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="20dp"
+            android:text="Se déconnecter"
+            android:visibility="gone"
+            app:cornerRadius="16dp"
+            app:icon="@drawable/ic_logout"
+            app:iconGravity="textStart" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>
+=====FILE: app/src/main/res/layout/tab_programme.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.swiperefreshlayout.widget.SwipeRefreshLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/swipeProg"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:id="@+id/progList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="24dp" />
+    </androidx.core.widget.NestedScrollView>
+</androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+=====FILE: app/src/main/res/menu/bottom_nav.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/nav_connexion" android:icon="@drawable/ic_login" android:title="Connexion" />
+    <item android:id="@+id/nav_programme" android:icon="@drawable/ic_event" android:title="Programme" />
+    <item android:id="@+id/nav_changements" android:icon="@drawable/ic_history" android:title="Changements" />
+</menu>
+=====FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_bg" />
+    <foreground android:drawable="@drawable/ic_fg" />
+    <monochrome android:drawable="@drawable/ic_mono" />
+</adaptive-icon>
+=====FILE: app/src/main/res/values-night/bools.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <bool name="light_bars">false</bool>
+</resources>
+=====FILE: app/src/main/res/values-night/colors.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="c_primary">#A2C9FF</color>
+    <color name="c_on_primary">#00315B</color>
+    <color name="c_primary_container">#1F4E79</color>
+    <color name="c_on_primary_container">#D3E4FF</color>
+    <color name="c_secondary">#FFB95C</color>
+    <color name="c_on_secondary">#4A2800</color>
+    <color name="c_secondary_container">#6A3C00</color>
+    <color name="c_on_secondary_container">#FFDDB5</color>
+    <color name="c_background">#10141A</color>
+    <color name="c_surface_variant">#252C36</color>
+
+    <color name="ok">#81C784</color>
+    <color name="edit">#FFB74D</color>
+    <color name="cancel">#EF9A9A</color>
+    <color name="error">#F2B8B5</color>
+    <color name="neutral">#9AA9BA</color>
+</resources>
+=====FILE: app/src/main/res/values/bools.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <bool name="light_bars">true</bool>
+</resources>
+=====FILE: app/src/main/res/values/colors.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_bg">#1F4E79</color>
+    <color name="widget_bg">#E61F4E79</color>
+
+    <color name="brand">#1F4E79</color>
+    <color name="brand_light">#2B6CB0</color>
+    <color name="accent">#F59E0B</color>
+
+    <color name="c_primary">#1F4E79</color>
+    <color name="c_on_primary">#FFFFFF</color>
+    <color name="c_primary_container">#D3E4FF</color>
+    <color name="c_on_primary_container">#001C38</color>
+    <color name="c_secondary">#8A5100</color>
+    <color name="c_on_secondary">#FFFFFF</color>
+    <color name="c_secondary_container">#FFDDB5</color>
+    <color name="c_on_secondary_container">#2C1700</color>
+    <color name="c_background">#F7F9FD</color>
+    <color name="c_surface_variant">#E7EDF6</color>
+
+    <color name="ok">#2E7D32</color>
+    <color name="edit">#E08A00</color>
+    <color name="cancel">#D32F2F</color>
+    <color name="error">#B3261E</color>
+    <color name="neutral">#5F7186</color>
+</resources>
+=====FILE: app/src/main/res/values/themes.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BuildersSync" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/c_primary</item>
+        <item name="colorOnPrimary">@color/c_on_primary</item>
+        <item name="colorPrimaryContainer">@color/c_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/c_on_primary_container</item>
+        <item name="colorSecondary">@color/c_secondary</item>
+        <item name="colorOnSecondary">@color/c_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/c_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/c_on_secondary_container</item>
+        <item name="colorSurfaceVariant">@color/c_surface_variant</item>
+        <item name="android:colorBackground">@color/c_background</item>
+        <item name="android:statusBarColor">@color/c_background</item>
+        <item name="android:navigationBarColor">@color/c_background</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+    </style>
+</resources>
