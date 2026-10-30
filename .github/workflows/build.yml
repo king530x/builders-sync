@@ -1,0 +1,75 @@
+name: Fabriquer l'APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Déballer les sources (première fois)
+        if: hashFiles('sources.txt') != ''
+        run: |
+          python3 - <<'PY'
+          import os, re
+          data = open('sources.txt', encoding='utf-8').read()
+          parts = re.split(r'^=====FILE: (.+?)=====\n', data, flags=re.M)
+          for i in range(1, len(parts), 2):
+              path = parts[i].strip()
+              os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+              with open(path, 'w', encoding='utf-8') as f:
+                  f.write(parts[i + 1])
+              print('écrit :', path)
+          PY
+          git rm -q sources.txt
+
+      - name: Clé de signature (créée une seule fois)
+        run: |
+          if [ ! -f keystore/release.jks ]; then
+            mkdir -p keystore
+            keytool -genkeypair -keystore keystore/release.jks -storepass buildersync -keypass buildersync \
+              -alias builders -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Builders Sync"
+          fi
+
+      - name: Enregistrer les fichiers dans le dépôt
+        run: |
+          git config user.name "builders-sync-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "Sources du projet et clé de signature" && git push)
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Compiler
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Préparer l'APK
+        run: cp app/build/outputs/apk/release/app-release.apk BuildersSync.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BuildersSync-apk
+          path: BuildersSync.apk
+
+      - name: Publier la version
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Builders Sync v${{ github.run_number }}
+          body: "Depuis ton téléphone, touche **BuildersSync.apk** ci-dessous pour le télécharger et l'installer."
+          files: BuildersSync.apk
+          make_latest: true
