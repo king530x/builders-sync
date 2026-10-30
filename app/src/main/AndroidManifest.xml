@@ -12,7 +12,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="Builders Sync"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+        android:theme="@style/Theme.BuildersSync">
 
         <activity
             android:name=".MainActivity"

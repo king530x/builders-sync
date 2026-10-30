@@ -37,13 +37,76 @@ public class Store {
         }
     }
 
-    public static String email(Context c) { return secure(c).getString("email", ""); }
-    public static String password(Context c) { return secure(c).getString("pwd", ""); }
+    // Identifiants « session seulement » (case « Se souvenir de moi » décochée) : en mémoire.
+    private static volatile String memEmail = "", memPwd = "";
+
+    public static String savedEmail(Context c) { return secure(c).getString("email", ""); }
+
+    public static String email(Context c) {
+        String s = savedEmail(c);
+        return s.isEmpty() ? memEmail : s;
+    }
+
+    public static String password(Context c) {
+        String s = secure(c).getString("pwd", "");
+        return s.isEmpty() ? memPwd : s;
+    }
+
     public static boolean hasCreds(Context c) { return !email(c).isEmpty() && !password(c).isEmpty(); }
 
     public static void saveCreds(Context c, String email, String pwd) {
         secure(c).edit().putString("email", email.trim()).putString("pwd", pwd).apply();
     }
+
+    /** Connexion depuis l'écran d'accueil. */
+    public static void login(Context c, String email, String pwd, boolean remember) {
+        if (remember) {
+            saveCreds(c, email, pwd);
+            memEmail = "";
+            memPwd = "";
+        } else {
+            secure(c).edit().clear().apply();
+            memEmail = email.trim();
+            memPwd = pwd;
+        }
+        prefs(c).edit().putBoolean("loggedOut", false).putBoolean("remember", remember)
+                .putString("account", email.trim()).apply();
+        clearError(c);
+    }
+
+    public static void logout(Context c) {
+        secure(c).edit().clear().apply();
+        memEmail = "";
+        memPwd = "";
+        prefs(c).edit().putBoolean("loggedOut", true).remove("mfa").remove("phase")
+                .putString("status", "Déconnecté").apply();
+    }
+
+    public static boolean isLoggedOut(Context c) { return prefs(c).getBoolean("loggedOut", false); }
+    public static boolean remember(Context c) { return prefs(c).getBoolean("remember", true); }
+    public static String account(Context c) {
+        String a = prefs(c).getString("account", "");
+        return a.isEmpty() ? email(c) : a;
+    }
+
+    /** Connecté = pas déconnecté et au moins une synchro réussie avec ce compte. */
+    public static boolean isLoggedIn(Context c) {
+        return !isLoggedOut(c) && lastOk(c) > 0 && !account(c).isEmpty();
+    }
+
+    // --- Suivi en direct de la synchro (affiché par l'app) ---
+    public static void setRunning(Context c, boolean r) {
+        SharedPreferences.Editor e = prefs(c).edit().putBoolean("running", r);
+        if (!r) e.remove("phase").remove("mfa");
+        e.apply();
+    }
+    public static boolean running(Context c) { return prefs(c).getBoolean("running", false); }
+    public static void setPhase(Context c, String p) {
+        if (!p.equals(phase(c))) prefs(c).edit().putString("phase", p).apply();
+    }
+    public static String phase(Context c) { return prefs(c).getString("phase", ""); }
+    public static void setMfa(Context c, String n) { prefs(c).edit().putString("mfa", n == null ? "" : n).apply(); }
+    public static String mfa(Context c) { return prefs(c).getString("mfa", null); }
 
     public static long calendarId(Context c) { return prefs(c).getLong("calId", -1); }
     public static void setCalendarId(Context c, long id, String name) {

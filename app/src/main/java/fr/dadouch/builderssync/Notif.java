@@ -21,9 +21,11 @@ public class Notif {
                 NotificationManager.IMPORTANCE_HIGH));
     }
 
-    private static PendingIntent open(Context c, Class<?> cls) {
-        Intent i = new Intent(c, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        return PendingIntent.getActivity(c, cls.hashCode(), i,
+    private static PendingIntent open(Context c, int tab) {
+        Intent i = new Intent(c, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(MainActivity.EXTRA_TAB, tab);
+        return PendingIntent.getActivity(c, 100 + tab, i,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
@@ -39,11 +41,11 @@ public class Notif {
         for (String l : lines) st.addLine(l);
         String title = lines.size() == 1 ? "1 changement de planning" : lines.size() + " changements de planning";
         post(c, ID_CHANGES, new Notification.Builder(c, CH_CHANGES)
-                .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
+                .setSmallIcon(R.drawable.ic_notif)
                 .setContentTitle(title)
                 .setContentText(lines.get(0))
                 .setStyle(st)
-                .setContentIntent(open(c, MainActivity.class))
+                .setContentIntent(open(c, MainActivity.TAB_CHANGES))
                 .setAutoCancel(true)
                 .build());
     }
@@ -55,8 +57,8 @@ public class Notif {
                 .setContentTitle("Builders Sync : synchro impossible")
                 .setContentText(message)
                 .setStyle(new Notification.BigTextStyle().bigText(message
-                        + (openLogin ? "\nTouche ici pour te reconnecter." : "")))
-                .setContentIntent(open(c, openLogin ? LoginActivity.class : MainActivity.class))
+                        + (openLogin ? "\nTouche ici pour ouvrir l'app." : "")))
+                .setContentIntent(open(c, MainActivity.TAB_LOGIN))
                 .setAutoCancel(true)
                 .build());
     }
@@ -71,6 +73,7 @@ public class Notif {
                 .setContentText(txt)
                 .setStyle(new Notification.BigTextStyle().bigText(txt))
                 .setTimeoutAfter(4 * 60_000)
+                .setContentIntent(open(c, MainActivity.TAB_LOGIN))
                 .setAutoCancel(true)
                 .build());
     }

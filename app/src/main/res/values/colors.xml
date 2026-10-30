@@ -2,4 +2,25 @@
 <resources>
     <color name="ic_bg">#1F4E79</color>
     <color name="widget_bg">#E61F4E79</color>
+
+    <color name="brand">#1F4E79</color>
+    <color name="brand_light">#2B6CB0</color>
+    <color name="accent">#F59E0B</color>
+
+    <color name="c_primary">#1F4E79</color>
+    <color name="c_on_primary">#FFFFFF</color>
+    <color name="c_primary_container">#D3E4FF</color>
+    <color name="c_on_primary_container">#001C38</color>
+    <color name="c_secondary">#8A5100</color>
+    <color name="c_on_secondary">#FFFFFF</color>
+    <color name="c_secondary_container">#FFDDB5</color>
+    <color name="c_on_secondary_container">#2C1700</color>
+    <color name="c_background">#F7F9FD</color>
+    <color name="c_surface_variant">#E7EDF6</color>
+
+    <color name="ok">#2E7D32</color>
+    <color name="edit">#E08A00</color>
+    <color name="cancel">#D32F2F</color>
+    <color name="error">#B3261E</color>
+    <color name="neutral">#5F7186</color>
 </resources>

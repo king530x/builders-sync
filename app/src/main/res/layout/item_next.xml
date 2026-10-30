@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/bg_next"
+    android:elevation="4dp"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/nHead"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:letterSpacing="0.08"
+        android:text="PROCHAIN COURS"
+        android:textAppearance="?attr/textAppearanceLabelMedium"
+        android:textColor="#FFFFD27F" />
+
+    <TextView
+        android:id="@+id/nTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textAppearance="?attr/textAppearanceTitleLarge"
+        android:textColor="#FFFFFFFF"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/nTime"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textAppearance="?attr/textAppearanceBodyLarge"
+        android:textColor="#FFE3ECF7" />
+
+    <TextView
+        android:id="@+id/nWho"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="#FFC9D8EA" />
+</LinearLayout>

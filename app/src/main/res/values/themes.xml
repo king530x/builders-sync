@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BuildersSync" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/c_primary</item>
+        <item name="colorOnPrimary">@color/c_on_primary</item>
+        <item name="colorPrimaryContainer">@color/c_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/c_on_primary_container</item>
+        <item name="colorSecondary">@color/c_secondary</item>
+        <item name="colorOnSecondary">@color/c_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/c_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/c_on_secondary_container</item>
+        <item name="colorSurfaceVariant">@color/c_surface_variant</item>
+        <item name="android:colorBackground">@color/c_background</item>
+        <item name="android:statusBarColor">@color/c_background</item>
+        <item name="android:navigationBarColor">@color/c_background</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+    </style>
+</resources>

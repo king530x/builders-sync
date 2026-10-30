@@ -60,6 +60,7 @@ public class SyncWorker extends Worker {
         } catch (Exception e) {
             fail(getApplicationContext(), "crash", "Erreur inattendue : " + e.getMessage(), false);
         } finally {
+            Store.setRunning(getApplicationContext(), false);
             RUNNING.set(false);
         }
         return Result.success();
@@ -77,10 +78,7 @@ public class SyncWorker extends Worker {
             fail(c, "perm", "Autorisation d'accès à l'agenda manquante : ouvre l'app.", false);
             return;
         }
-        if (!Store.hasCreds(c)) {
-            fail(c, "creds", "Identifiants Microsoft non enregistrés : ouvre l'app.", false);
-            return;
-        }
+        if (Store.isLoggedOut(c)) return; // l'utilisateur s'est déconnecté
         CalendarSync.Cal cal = CalendarSync.byId(c, Store.calendarId(c));
         if (cal == null) cal = CalendarSync.defaultCalendar(c);
         if (cal == null) {
@@ -89,6 +87,15 @@ public class SyncWorker extends Worker {
         }
 
         Store.setStatus(c, "Synchronisation en cours…");
+        Store.setRunning(c, true);
+        try {
+            runSync(c, cal);
+        } finally {
+            Store.setRunning(c, false);
+        }
+    }
+
+    private void runSync(Context c, CalendarSync.Cal cal) throws InterruptedException {
         final JSONArray[] result = {null};
         final String[] err = {null, null};
         final CountDownLatch latch = new CountDownLatch(1);
@@ -100,8 +107,8 @@ public class SyncWorker extends Worker {
             try {
                 holder[0] = PortalSession.headless(c);
                 ps[0] = new PortalSession(c, holder[0], true, LOGIN_TIMEOUT, weeks, new PortalSession.Listener() {
-                    public void onStatus(String s) { }
-                    public void onMfa(String n) { Notif.mfa(c, n); }
+                    public void onStatus(String s) { Store.setPhase(c, s); }
+                    public void onMfa(String n) { Store.setMfa(c, n); Notif.mfa(c, n); }
                     public void onReady() { }
                     public void onResult(JSONArray a) { result[0] = a; latch.countDown(); }
                     public void onError(String code, String m) { err[0] = code; err[1] = m; latch.countDown(); }
@@ -123,6 +130,8 @@ public class SyncWorker extends Worker {
         if (err[0] != null) {
             boolean login = err[0].startsWith("mfa") || err[0].equals("timeout") || err[0].equals("need_user")
                     || err[0].equals("bad_credentials");
+            if (err[0].equals("need_user") && !Store.hasCreds(c))
+                err[1] = "Session expirée : reconnecte-toi dans l'app.";
             fail(c, err[0], err[1] + " Rien n'a été modifié dans l'agenda.", login);
             return;
         }
