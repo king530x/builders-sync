@@ -126,7 +126,7 @@ public class MainActivity extends AppCompatActivity implements SharedPreferences
         syncLast = findViewById(R.id.syncLast);
         syncPhase = findViewById(R.id.syncPhase);
         calName = findViewById(R.id.calName);
-        swipeProg = findViewById(R.id.swipeProg);
+        swipeProg = (SwipeRefreshLayout) tabs[1];
         progList = findViewById(R.id.progList);
         changeList = findViewById(R.id.changeList);
 
